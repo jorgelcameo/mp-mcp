@@ -1,0 +1,12 @@
+.git
+.github
+.venv
+.aws-sam
+__pycache__
+*.py[oc]
+*.egg-info
+.pytest_cache
+.ruff_cache
+tests
+specs
+Dockerfile

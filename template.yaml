@@ -1,0 +1,160 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  mp-mcp — remote MCP server (Streamable HTTP, stateless) on AWS Lambda.
+  Lambda + Function URL (no API Gateway), arm64, container image, bearer-token auth
+  enforced in application code, secrets in SSM Parameter Store.
+
+Parameters:
+  AuthTokenParam:
+    Type: String
+    Default: /mcp-server/auth-token
+    Description: SSM SecureString parameter holding the bearer token.
+
+  AnthropicKeyParam:
+    Type: String
+    Default: /mcp-server/anthropic-api-key
+    Description: SSM SecureString parameter holding the Anthropic API key.
+
+  AllowedHosts:
+    Type: String
+    Default: '*'
+    Description: >
+      Comma-separated Host header allowlist. '*' disables DNS-rebinding protection
+      because the Function URL hostname only exists after the first deploy. To
+      harden, redeploy with the real host from the McpFunctionUrl output.
+
+  LogRetentionDays:
+    Type: Number
+    Default: 14
+    MinValue: 1
+
+  BudgetMonthlyLimitUsd:
+    Type: Number
+    Default: 5
+    Description: Monthly cost budget for the cost alert (CR2).
+
+  BudgetNotificationEmail:
+    Type: String
+    Default: ''
+    Description: Email for the budget alert. Leave empty to skip creating the budget.
+
+Conditions:
+  HasBudgetEmail: !Not [!Equals [!Ref BudgetNotificationEmail, '']]
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 512
+
+Resources:
+  McpFunction:
+    Type: AWS::Serverless::Function
+    # Wait for the log group so CloudWatch cannot auto-create it first with
+    # retention "never expire" and then collide with this resource.
+    DependsOn: McpLogGroup
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-mcp
+      PackageType: Image
+      Architectures:
+        - arm64
+      Environment:
+        Variables:
+          SSM_AUTH_TOKEN_PARAM: !Ref AuthTokenParam
+          SSM_ANTHROPIC_KEY_PARAM: !Ref AnthropicKeyParam
+          ALLOWED_HOSTS: !Ref AllowedHosts
+          LOG_LEVEL: INFO
+      Policies:
+        - Statement:
+            - Sid: ReadOnlyTheTwoSecrets
+              Effect: Allow
+              Action:
+                - ssm:GetParameter
+              Resource:
+                - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AuthTokenParam}
+                - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AnthropicKeyParam}
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: .
+      DockerTag: v1
+
+  McpFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt McpFunction.Arn
+      AuthType: NONE
+      InvokeMode: BUFFERED
+      # No Cors block on purpose: the ASGI app owns CORS (Starlette middleware),
+      # and Function URL CORS cannot express the Mcp-* headers cleanly.
+
+  McpFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    # Must be applied after the URL exists, or Lambda's edge ignores it and every
+    # request gets a 403 "Forbidden" from the Function URL itself.
+    DependsOn: McpFunctionUrl
+    Properties:
+      Action: lambda:InvokeFunctionUrl
+      FunctionName: !GetAtt McpFunction.Arn
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
+  McpFunctionUrlInvokePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn: McpFunctionUrl
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt McpFunction.Arn
+      Principal: '*'
+      InvokedViaFunctionUrl: true
+
+  McpLogGroup:
+    Type: AWS::Logs::LogGroup
+    # Created explicitly so retention is enforced (CR3); SAM's implicit log group
+    # would never expire.
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      # Must match the function name Lambda uses for its log group; kept as its
+      # own !Sub so this resource does not depend on the function (which in turn
+      # depends on this one).
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-mcp
+      RetentionInDays: !Ref LogRetentionDays
+
+  Budget:
+    Type: AWS::Budgets::Budget
+    Condition: HasBudgetEmail
+    Properties:
+      Budget:
+        BudgetName: !Sub ${AWS::StackName}-monthly
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref BudgetMonthlyLimitUsd
+          Unit: USD
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+          Subscribers:
+            - SubscriptionType: EMAIL
+              # The whole Budget resource is gated by HasBudgetEmail, so this ref
+              # is only evaluated when the parameter is non-empty.
+              Address: !Ref BudgetNotificationEmail
+
+Outputs:
+  McpEndpoint:
+    Description: MCP endpoint URL to give clients
+    Value: !Sub ${McpFunctionUrl.FunctionUrl}mcp
+
+  McpFunctionUrlHost:
+    Description: Function URL host (use as AllowedHosts to enable DNS-rebinding protection)
+    Value: !Select [2, !Split ['/', !GetAtt McpFunctionUrl.FunctionUrl]]
+
+  McpFunctionArn:
+    Description: Lambda function ARN
+    Value: !GetAtt McpFunction.Arn
+
+  LogGroupName:
+    Description: CloudWatch log group (retention applies)
+    Value: !Sub /aws/lambda/${AWS::StackName}-mcp
