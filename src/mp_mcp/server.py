@@ -18,8 +18,8 @@ from mp_mcp.middleware import AccessLogMiddleware, BearerAuthMiddleware
 from mp_mcp.secrets import get_auth_token
 
 INSTRUCTIONS = (
-    "A remote MCP server for the Max Payne fan tribute. Tools are placeholders "
-    "until Section 11 of the spec is filled in."
+    "A remote MCP server for the Max Payne fan tribute. It can find a thematically "
+    "relevant quote from its curated v1 collection."
 )
 
 mcp = MCPServer("mp-mcp", instructions=INSTRUCTIONS, version="0.1.0")
@@ -31,6 +31,19 @@ mcp = MCPServer("mp-mcp", instructions=INSTRUCTIONS, version="0.1.0")
 def ping() -> str:
     """Placeholder tool — Section 11 of the spec (SPEC.md) defines the real ones."""
     return "pong"
+
+
+@mcp.tool(
+    description=(
+        "Match a short text (up to 20 characters) to the closest quote in the curated Max Payne "
+        "collection. Returns the quote, speaker, source, and brief reason, or a no-match result."
+    ),
+)
+async def find_quote(query: str) -> str:
+    """Select the closest known quote without generating new quote text."""
+    from mp_mcp.quote_matcher import find_best_quote
+
+    return await find_best_quote(query)
 
 
 @mcp.custom_route("/health", methods=["GET"])
