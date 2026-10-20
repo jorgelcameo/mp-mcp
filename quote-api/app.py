@@ -45,9 +45,9 @@ def _response(status: int, body: dict[str, Any]) -> dict[str, Any]:
 def _token() -> str:
     global _auth_token
     if _auth_token is None:
-        _auth_token = _ssm.get_parameter(Name=AUTH_TOKEN_PARAM, WithDecryption=True)[
-            "Parameter"
-        ]["Value"]
+        _auth_token = _ssm.get_parameter(Name=AUTH_TOKEN_PARAM, WithDecryption=True)["Parameter"][
+            "Value"
+        ]
     return _auth_token
 
 
@@ -117,13 +117,16 @@ def _reserve_request(client_key: str, now: int) -> dict[str, Any] | None:
 
 async def _call_quote_tool(query: str) -> dict[str, Any]:
     http_client = create_mcp_http_client(headers={"Authorization": f"Bearer {_token()}"})
-    async with http_client:
-        async with streamable_http_client(
-            MCP_ENDPOINT, http_client=http_client, terminate_on_close=False
-        ) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                result = await session.call_tool("find_quote", {"query": query})
+    async with (
+        http_client,
+        streamable_http_client(MCP_ENDPOINT, http_client=http_client, terminate_on_close=False) as (
+            read_stream,
+            write_stream,
+        ),
+        ClientSession(read_stream, write_stream) as session,
+    ):
+        await session.initialize()
+        result = await session.call_tool("find_quote", {"query": query})
 
     text = next((item.text for item in result.content if item.type == "text"), "")
     if result.is_error:
@@ -182,7 +185,7 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
 
     try:
         match = asyncio.run(_call_quote_tool(query))
-    except Exception as exc:  # noqa: BLE001 - surface the MCP failure during active debugging
+    except Exception:  # noqa: BLE001 - surface the MCP failure during active debugging
         logger.exception("Quote API MCP request failed")
         return _response(502, {"error": "Quote service unavailable", "quota": quota})
 

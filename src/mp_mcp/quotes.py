@@ -49,7 +49,10 @@ QUOTES = (
     ),
     Quote(
         id="max-dream-of-wife",
-        text="I had a dream of my wife. She was pregnant, and I was scared. It was a good dream. Then I woke up.",
+        text=(
+            "I had a dream of my wife. She was pregnant, and I was scared. "
+            "It was a good dream. Then I woke up."
+        ),
         speaker="Max Payne",
         source="Website Monologues",
     ),

@@ -26,8 +26,7 @@ def _message(query: str, settings: Settings) -> str:
         raise
     model = os.getenv("ANTHROPIC_MODEL", DEFAULT_MODEL)
     candidates = [
-        {"id": quote.id, "quote": quote.text, "speaker": quote.speaker}
-        for quote in QUOTES
+        {"id": quote.id, "quote": quote.text, "speaker": quote.speaker} for quote in QUOTES
     ]
     payload = {
         "model": model,
