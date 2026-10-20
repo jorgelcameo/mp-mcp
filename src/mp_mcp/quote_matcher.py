@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import urllib.error
 import urllib.request
@@ -13,10 +14,16 @@ from mp_mcp.quotes import QUOTES, QUOTES_BY_ID
 from mp_mcp.secrets import get_anthropic_api_key
 
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+logger = logging.getLogger(__name__)
 
 
 def _message(query: str, settings: Settings) -> str:
-    key = get_anthropic_api_key(settings)
+    try:
+        key = get_anthropic_api_key(settings)
+    except Exception as exc:  # noqa: BLE001 - report safe AWS error code only
+        error = getattr(exc, "response", {}).get("Error", {}).get("Code", type(exc).__name__)
+        logger.error("Could not load Anthropic API key from SSM (error=%s)", error)
+        raise
     model = os.getenv("ANTHROPIC_MODEL", DEFAULT_MODEL)
     candidates = [
         {"id": quote.id, "quote": quote.text, "speaker": quote.speaker}
@@ -24,7 +31,7 @@ def _message(query: str, settings: Settings) -> str:
     ]
     payload = {
         "model": model,
-        "max_tokens": 120,
+        "max_tokens": 180,
         "system": (
             "Match the user's short text to the single most relevant item in the supplied "
             "Max Payne quote collection. The input can be about anything; look for a clear "
@@ -66,6 +73,11 @@ def _message(query: str, settings: Settings) -> str:
         ),
         "",
     )
+    text = text.strip()
+    if text.startswith("```") and text.endswith("```"):
+        text = text[3:-3].strip()
+        if text.startswith("json"):
+            text = text[4:].lstrip()
     try:
         result = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -96,4 +108,8 @@ async def find_best_quote(query: str) -> str:
         return json.dumps(
             {"quote": None, "speaker": None, "reason": "Input must be between 1 and 20 characters."}
         )
-    return await asyncio.to_thread(_message, query, Settings.from_env())
+    try:
+        return await asyncio.to_thread(_message, query, Settings.from_env())
+    except Exception as exc:  # noqa: BLE001 - keep tool errors useful without logging input
+        logger.error("Quote matching tool failed (%s)", type(exc).__name__)
+        raise

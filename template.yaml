@@ -139,11 +139,11 @@ Resources:
         MaxAge: 600
       RouteSettings:
         'POST /quote':
-          ThrottlingBurstLimit: 5
-          ThrottlingRateLimit: 1
+          ThrottlingBurstLimit: 10
+          ThrottlingRateLimit: 5
         'GET /quota':
-          ThrottlingBurstLimit: 5
-          ThrottlingRateLimit: 1
+          ThrottlingBurstLimit: 10
+          ThrottlingRateLimit: 5
       DefinitionBody:
         openapi: 3.0.1
         info:

@@ -6,6 +6,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import os
 import time
 from datetime import UTC, datetime
@@ -15,6 +16,8 @@ import boto3
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared._httpx_utils import create_mcp_http_client
+
+logger = logging.getLogger(__name__)
 
 MCP_ENDPOINT = os.environ["MCP_ENDPOINT"]
 AUTH_TOKEN_PARAM = os.getenv("SSM_AUTH_TOKEN_PARAM", "/mcp-server/auth-token")
@@ -122,9 +125,9 @@ async def _call_quote_tool(query: str) -> dict[str, Any]:
                 await session.initialize()
                 result = await session.call_tool("find_quote", {"query": query})
 
-    if result.isError:
-        raise RuntimeError("MCP quote tool failed")
     text = next((item.text for item in result.content if item.type == "text"), "")
+    if result.is_error:
+        raise RuntimeError(text or "MCP quote tool failed without an error message")
     parsed = json.loads(text)
     return parsed if isinstance(parsed, dict) else {"quote": None, "speaker": None}
 
@@ -179,7 +182,8 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
 
     try:
         match = asyncio.run(_call_quote_tool(query))
-    except Exception:  # noqa: BLE001 - don't return MCP, SSM, or provider internals
-        return _response(502, {"error": "Quote matching is temporarily unavailable", "quota": quota})
+    except Exception as exc:  # noqa: BLE001 - surface the MCP failure during active debugging
+        logger.exception("Quote API MCP request failed")
+        return _response(502, {"error": "Quote service unavailable", "quota": quota})
 
     return _response(200, {"match": match, "quota": quota})
