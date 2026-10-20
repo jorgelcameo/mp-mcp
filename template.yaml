@@ -1,9 +1,9 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  mp-mcp — remote MCP server (Streamable HTTP, stateless) on AWS Lambda.
-  Lambda + Function URL (no API Gateway), arm64, container image, bearer-token auth
-  enforced in application code, secrets in SSM Parameter Store.
+  mp-mcp — remote MCP server (Streamable HTTP, stateless) on AWS Lambda, with a
+  separate API Gateway JSON facade and quota proxy for the website. Secrets stay
+  in SSM Parameter Store.
 
 Parameters:
   AuthTokenParam:
@@ -38,6 +38,23 @@ Parameters:
     Type: String
     Default: ''
     Description: Email for the budget alert. Leave empty to skip creating the budget.
+
+  FrontendOrigin:
+    Type: String
+    Default: https://jorgelcameo.github.io
+    Description: Exact HTTPS origin allowed to call the public quote API.
+
+  MaxpaynizeLimit:
+    Type: Number
+    Default: 5
+    MinValue: 1
+    Description: Maxpaynize requests allowed per source IP in each quota window.
+
+  MaxpaynizeWindowSeconds:
+    Type: Number
+    Default: 86400
+    MinValue: 1
+    Description: Quota window in seconds; lower this value for testing.
 
 Conditions:
   HasBudgetEmail: !Not [!Equals [!Ref BudgetNotificationEmail, '']]
@@ -107,6 +124,107 @@ Resources:
       Principal: '*'
       InvokedViaFunctionUrl: true
 
+  QuoteHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: '$default'
+      CorsConfiguration:
+        AllowOrigins:
+          - !Ref FrontendOrigin
+        AllowMethods:
+          - GET
+          - POST
+        AllowHeaders:
+          - content-type
+        MaxAge: 600
+      RouteSettings:
+        'POST /quote':
+          ThrottlingBurstLimit: 10
+          ThrottlingRateLimit: 5
+        'GET /quota':
+          ThrottlingBurstLimit: 10
+          ThrottlingRateLimit: 5
+      DefinitionBody:
+        openapi: 3.0.1
+        info:
+          title: Max Payne quote API
+          version: '1.0'
+        paths:
+          /quote:
+            post:
+              responses:
+                '200':
+                  description: Quote match or quota error
+          /quota:
+            get:
+              responses:
+                '200':
+                  description: Remaining quote requests
+
+  QuoteUsageTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: client_key
+          AttributeType: S
+        - AttributeName: window_id
+          AttributeType: N
+      KeySchema:
+        - AttributeName: client_key
+          KeyType: HASH
+        - AttributeName: window_id
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+
+  QuoteApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-quote-api
+      CodeUri: quote-api/
+      Handler: app.handler
+      Runtime: python3.12
+      Architectures:
+        - arm64
+      MemorySize: 256
+      Timeout: 28
+      Environment:
+        Variables:
+          MCP_ENDPOINT: !Join ['', [!GetAtt McpFunctionUrl.FunctionUrl, mcp]]
+          SSM_AUTH_TOKEN_PARAM: !Ref AuthTokenParam
+          QUOTA_TABLE_NAME: !Ref QuoteUsageTable
+          QUOTA_LIMIT: !Ref MaxpaynizeLimit
+          QUOTA_WINDOW_SECONDS: !Ref MaxpaynizeWindowSeconds
+      Policies:
+        - Statement:
+            - Sid: ReadMcpBearerToken
+              Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AuthTokenParam}
+            - Sid: EnforceQuoteQuota
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+              Resource: !GetAtt QuoteUsageTable.Arn
+      Events:
+        FindQuote:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref QuoteHttpApi
+            Path: /quote
+            Method: POST
+            TimeoutInMillis: 29000
+        GetQuota:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref QuoteHttpApi
+            Path: /quota
+            Method: GET
+            TimeoutInMillis: 29000
+
   McpLogGroup:
     Type: AWS::Logs::LogGroup
     # Created explicitly so retention is enforced (CR3); SAM's implicit log group
@@ -143,6 +261,10 @@ Resources:
               Address: !Ref BudgetNotificationEmail
 
 Outputs:
+  QuoteApiBaseUrl:
+    Description: JSON API base URL for the website
+    Value: !GetAtt QuoteHttpApi.ApiEndpoint
+
   McpEndpoint:
     Description: MCP endpoint URL to give clients
     Value: !Sub ${McpFunctionUrl.FunctionUrl}mcp

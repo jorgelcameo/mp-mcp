@@ -1,11 +1,11 @@
 # mp-mcp
 
-A remote [MCP](https://modelcontextprotocol.io) server in Python, deployed to AWS Lambda at
-roughly $0/month. It speaks **Streamable HTTP** in stateless mode, so any invocation can serve
-any request — no sessions, no in-memory state.
+A remote [MCP](https://modelcontextprotocol.io) server in Python, deployed to AWS Lambda. It
+speaks **Streamable HTTP** in stateless mode. A public JSON facade also serves the Maxpaynize
+website feature through API Gateway and a quota proxy.
 
-Designed against [`specs/init/SPEC.md`](specs/init/SPEC.md). Tool definitions (spec Section 11)
-are still TBD; the server currently exposes a single `ping` placeholder.
+The quote matcher is described in [`specs/quote-matcher/SPEC.md`](specs/quote-matcher/SPEC.md).
+The server exposes `ping` and `find_quote`; quote results come from a curated corpus.
 
 ## How it fits together
 
@@ -23,7 +23,7 @@ MCP client ──HTTPS──▶ Lambda Function URL (AuthType: NONE)
 | Concern | Choice |
 |---|---|
 | Compute | Lambda, container image, **arm64**, 512 MB, 30 s (spec §2) |
-| Ingress | Function URL (`AuthType: NONE`) — no API Gateway (FR1, SR1) |
+| MCP ingress | Function URL (`AuthType: NONE`); quote website ingress uses an HTTP API |
 | HTTP bridge | [Lambda Web Adapter](https://github.com/aws/aws-lambda-web-adapter) 1.1.0 |
 | Transport | Streamable HTTP, `stateless_http=True`, `json_response=True` (FR3) |
 | Auth | `Authorization: Bearer <token>` checked in ASGI middleware, constant time (SR2) |
@@ -44,9 +44,16 @@ src/mp_mcp/
   config.py       # Settings from environment variables
   secrets.py      # SSM lookups, cached per process
 tests/            # HTTP-level tests, no AWS calls
-template.yaml     # SAM: function, Function URL, IAM, log group, budget
+quote-api/        # JSON API, quota enforcement, MCP client
+template.yaml     # SAM: functions, API, quota table, IAM, logs, budget
 Dockerfile        # arm64 image: python:3.12-slim + uv + Web Adapter
 ```
+
+The SAM stack creates an HTTP API (`POST /quote`, `GET /quota`), a DynamoDB usage table, and a
+proxy Lambda. The proxy hashes API Gateway's source IP for its quota key, reserves a use before
+matching, and reads the MCP bearer token from the existing SSM parameter. Configure
+`FrontendOrigin`, `MaxpaynizeLimit` (default 5), and `MaxpaynizeWindowSeconds` (default 86400).
+The `QuoteApiBaseUrl` output is the website's `QUOTE_API_URL`.
 
 The spec proposed an `app/` directory; this repo keeps the pre-existing `src/mp_mcp` layout
 because the `uv_build` backend and `mp-mcp` console script already assume it.
@@ -67,6 +74,7 @@ AWS_PROFILE=personal-dev uv run mp-mcp      # serves http://0.0.0.0:8080/mcp
 
 Everything is configured through environment variables: `SSM_AUTH_TOKEN_PARAM`,
 `SSM_ANTHROPIC_KEY_PARAM`, `ALLOWED_HOSTS`, `ALLOWED_ORIGINS`, `PORT`/`AWS_LWA_PORT`.
+Set `ANTHROPIC_MODEL` to override the quote matching model.
 
 `ALLOWED_HOSTS` controls DNS-rebinding protection:
 
@@ -130,6 +138,7 @@ allowlist afterwards, redeploy with `AllowedHosts=<host>` from the `McpFunctionU
 
 ## Cost notes
 
-Lambda free tier, a free Function URL, and standard-tier SSM parameters keep this at ~$0 for low
-traffic. There is no NAT gateway, no API Gateway, and no Secrets Manager. Log retention is 14
-days so CloudWatch cannot grow unbounded. The optional budget alerts at 80% of a $5 monthly limit.
+The MCP Function URL and standard-tier SSM parameters have no per-request gateway charge. The
+quote website adds API Gateway, a proxy Lambda, DynamoDB usage storage, and Anthropic API calls;
+these can incur charges with traffic. There is no NAT gateway or Secrets Manager. Log retention
+is 14 days, and the optional budget alerts at 80% of a $5 monthly limit.
