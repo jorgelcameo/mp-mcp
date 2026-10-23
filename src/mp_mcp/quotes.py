@@ -92,6 +92,24 @@ QUOTES = (
         speaker="John Mirra",
         source="Max Payne 2: The Fall of Max Payne",
     ),
+    Quote(
+        id="max-payne-ending",
+        text="They were all dead. The final gunshot was an exclamation mark to everything that had led to this point. I released my finger from the trigger, and it was over.",
+        speaker="Max Payne",
+        source="Max Payne 2: The Fall of Max Payne",
+    ),
+    Quote(
+        id="binary-choice",
+        text="Pulling the gun is a binary choice. You either do it or you don't.",
+        speaker="Max Payne",
+        source="Max Payne 2: The Fall of Max Payne",
+    ),
+    Quote(
+        id="max-genius-hole",
+        text="The genius of the hole: no matter how long you spend climbing out, you can still fall back down in an instant.",
+        speaker="Max Payne",
+        source="Max Payne 2: The Fall of Max Payne",
+    )
 )
 
 QUOTES_BY_ID = {quote.id: quote for quote in QUOTES}
